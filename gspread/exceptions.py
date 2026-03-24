@@ -72,3 +72,11 @@ class APIError(GSpreadException):
 
 class SpreadsheetNotFound(GSpreadException):
     """Trying to open non-existent or inaccessible spreadsheet."""
+
+
+class LocalFileError(GSpreadException):
+    """Error accessing local file."""
+
+
+class ReadOnlyError(GSpreadException):
+    """Trying to write to a read-only spreadsheet."""

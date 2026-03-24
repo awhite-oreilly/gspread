@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from google.auth.credentials import Credentials
 from requests import Response, Session
 
+from .drive_xlsx import DriveXlsxSpreadsheet
 from .exceptions import APIError, SpreadsheetNotFound
 from .http_client import HTTPClient, HTTPClientType, ParamsType
 from .spreadsheet import Spreadsheet
@@ -156,30 +157,42 @@ class Client:
 
         return Spreadsheet(self.http_client, properties)
 
-    def open_by_key(self, key: str) -> Spreadsheet:
+    def open_by_key(self, key: str) -> Union[Spreadsheet, DriveXlsxSpreadsheet]:
         """Opens a spreadsheet specified by `key` (a.k.a Spreadsheet ID).
 
         :param str key: A key of a spreadsheet as it appears in a URL in a browser.
-        :returns: a :class:`~gspread.models.Spreadsheet` instance.
+        :returns: a :class:`~gspread.models.Spreadsheet` instance, or a
+                  :class:`~gspread.drive_xlsx.DriveXlsxSpreadsheet` if the file is .xlsx format.
 
         >>> gc.open_by_key('0BmgG6nO_6dprdS1MN3d3MkdPa142WFRrdnRRUWl1UFE')
         """
+        # First, try to open as a normal Google Sheets spreadsheet
         try:
             spreadsheet = Spreadsheet(self.http_client, {"id": key})
+            return spreadsheet
         except APIError as ex:
             if ex.response.status_code == HTTPStatus.NOT_FOUND:
+                # File not found - check if it's an .xlsx file in Drive
+                try:
+                    metadata = self.get_file_drive_metadata(key)
+                    if metadata.get("mimeType") == MimeType.excel:
+                        # It's an .xlsx file - download and open it
+                        return self._open_drive_xlsx(key, metadata.get("name", "untitled.xlsx"))
+                except Exception:
+                    # If we can't get metadata, raise the original error
+                    pass
                 raise SpreadsheetNotFound(ex.response) from ex
             if ex.response.status_code == HTTPStatus.FORBIDDEN:
                 raise PermissionError from ex
             raise ex
-        return spreadsheet
 
-    def open_by_url(self, url: str) -> Spreadsheet:
+    def open_by_url(self, url: str) -> Union[Spreadsheet, DriveXlsxSpreadsheet]:
         """Opens a spreadsheet specified by `url`.
 
         :param str url: URL of a spreadsheet as it appears in a browser.
 
-        :returns: a :class:`~gspread.models.Spreadsheet` instance.
+        :returns: a :class:`~gspread.models.Spreadsheet` instance, or a
+                  :class:`~gspread.drive_xlsx.DriveXlsxSpreadsheet` if the file is .xlsx format.
 
         :raises gspread.SpreadsheetNotFound: if no spreadsheet with
                                              specified `url` is found.
@@ -187,6 +200,20 @@ class Client:
         >>> gc.open_by_url('https://docs.google.com/spreadsheet/ccc?key=0Bm...FE&hl')
         """
         return self.open_by_key(extract_id_from_url(url))
+
+    def _open_drive_xlsx(self, file_id: str, file_name: str) -> DriveXlsxSpreadsheet:
+        """Downloads and opens an .xlsx file from Google Drive.
+
+        :param str file_id: The Drive file ID
+        :param str file_name: The file name
+        :returns: DriveXlsxSpreadsheet instance
+        """
+        # Download the file using Drive API export/download
+        url = f"{DRIVE_FILES_API_V3_URL}/{file_id}?alt=media"
+        response = self.http_client.request("get", url)
+
+        # Create and return DriveXlsxSpreadsheet with the downloaded content
+        return DriveXlsxSpreadsheet(file_id, file_name, response.content)
 
     def openall(self, title: Optional[str] = None) -> List[Spreadsheet]:
         """Opens all available spreadsheets.
